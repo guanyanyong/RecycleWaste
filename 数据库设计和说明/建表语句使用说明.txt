@@ -1,0 +1,181 @@
+使用说明
+一、登录与权限说明
+1. 关于密码哈希
+上面 password 用的是 admin123 的 BCrypt $2a$10$ 标准哈希（$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy）。如果你的认证框架（如 Spring Security BCryptPasswordEncoder）校验不通过，用你自己的工具重新生成 admin123 的 BCrypt 值替换即可，例如：
+
+java
+new BCryptPasswordEncoder().encode("admin123")
+或命令行用 htpasswd -bnBC 10 "" admin123 生成。
+
+2. admin 的"全部权限"如何生效
+admin 拥有 tenant_admin 角色，该角色在脚本中被授予全部 19 个权限点。判权时：
+
+应用层对 tenant_admin 可直接短路返回 *（推荐，见判权伪代码），这样将来新增权限点 admin 自动拥有。
+
+或依赖 sys_role_permission 里的显式授权（当前已全量插入）。
+3. 多角色支持
+一个用户在一个租户下可有多个角色（sys_user_tenant_role 多行），判权时取权限并集。停用角色（sys_role.status=0）不贡献权限。
+
+4. 关于 ID 长度
+所有 VARCHAR(32) 主键用了 32 位占位 ID（如 T1000...001）。实际项目建议用雪花 ID 或 UUID 去横线，长度控制在 32 内即可。sys_permission.perm_id 是 VARCHAR(50)，用的是 模块:动作 语义 ID，不是随机 ID。
+5. 站点可见范围
+sys_user_tenant.station_scope 为空 = 该租户全部站点可见；填逗号分隔的 station_id 列表 = 仅可见这些站点。admin 为空，可见全部。
+
+二、多租户落地关键规则（开发必读）
+1. 隔离边界是 tenant_id，不是 station_id
+同一租户多站点数据互通（老板跨站看汇总），不同租户绝对隔离。所有业务 SQL 必须带 tenant_id 条件，由 MyBatis 拦截器自动拼接，禁止手写遗漏。
+
+2. 自用阶段就上租户拦截器
+自用阶段所有租户数据的 tenant_id 都是 1，但代码里不能有任何"只有一个租户所以不写条件"的写法。SaaS 化时零改造。
+
+3. 自增 ID 的边界
+当前主键为 BIGINT AUTO_INCREMENT，单库单表简单可靠。SaaS 化后若出现多库合并或分库分表，自增 ID 会冲突，届时需改雪花 ID（字段类型不变，去掉 AUTO_INCREMENT，应用层赋值）。当前阶段用自增无问题，SaaS 化前评估。
+
+4. 快照原则
+
+磅单存读数/扣杂快照（weigh_item.deduct_detail、start_weight/end_weight）。
+
+结算存重量/金额快照（settle_detail 的重量和金额字段）。
+
+规则/配置/物料后续变更，不影响历史磅单和结算金额。
+
+5. 读数与货物解耦
+weigh_reading 一个读数可被两个 weigh_item 引用（既作 A 的 end，又作 B 的 start），这是"一车多货、二次过磅皮重即下种货毛重"的核心弹性。不要加"读数只能被引用一次"的约束。
+
+6. 物料停用不删除
+material.status=0 仅从下拉隐藏，历史磅单/结算仍引用。删物料前先确认无引用。
+
+三、物料分类的使用规则（重要）
+当前分类是"系统预置 + 租户自定义"模式，规则如下：
+
+1. 系统预置分类（tenant_id IS NULL）
+
+所有租户默认可见（懒加载：不插 tenant_category 记录即视为启用）。
+
+租户不能改、不能删，只能通过 tenant_category 表禁用（is_enabled=0）。
+
+新增系统预置分类时，所有租户自动获得，无需批量插数据。
+
+2. 租户自定义分类（tenant_id=租户ID）
+
+直接插 material_category，tenant_id 填本租户，is_builtin=0。
+
+该租户可增删改，天然默认启用，不需要进 tenant_category。
+
+父分类可以是预置分类，也可以是本租户自定义分类；不能是别的租户的分类。
+
+3. 禁用预置分类
+租户点"不要这个分类"时，往 tenant_category 插 is_enabled=0。建议应用层级联禁用其下预置子分类（禁用"塑料"时连带禁用"塑料瓶/普通塑料/ppr白色/ppr黑"），避免树出现孤儿节点。
+
+4. 分类被物料引用时
+禁用分类不级联禁用物料。应用层在禁用时提示"该分类下还有 N 个物料，禁用后新建物料不可选此分类"，由租户决定先迁移物料再禁用。
+
+5. 查询某租户可见分类的 SQL（懒加载核心）
+
+sql
+SELECT c.*
+FROM material_category c
+LEFT JOIN tenant_category tc
+       ON tc.category_id = c.category_id
+      AND tc.tenant_id   = #{tenantId}
+WHERE c.status = 1
+  AND c.parent_id IS NULL
+  AND (
+        (c.tenant_id IS NULL AND (tc.is_enabled IS NULL OR tc.is_enabled = 1))
+     OR c.tenant_id = #{tenantId}
+      )
+ORDER BY COALESCE(tc.sort_no, c.sort_no), c.sort_no;
+
+四、扣杂规则与手工扣杂的关系
+tenant_deduct_rule 不是"强制扣杂"，而是扣杂默认值模板：
+
+真正的扣杂结果永远是现场确认后写进 weigh_item.deduct_weight / deduct_detail 的快照。
+
+规则表只用于过磅时预填（选物料 + 净重后自动算出扣杂比例/重量），操作员可手工覆盖、增删扣杂项。
+
+规则变更不影响历史磅单（磅单存快照，不引用规则）。
+
+自用阶段若完全不需要自动预填，tenant_deduct_rule 可以先不配数据，过磅界面纯手工录入，不影响任何功能。
+
+
+
+
+五、状态流转的业务约束（应用层实现）
+关于称重过程中的状态变动
+1. 0 新建 → 1 已核价
+
+必填：unit_price、price_type；浮动价时 price_source 必填。
+
+写入：pricing_user_id、pricing_time、deduct_rule_snapshot。
+
+扣点可在此刻设置：deduct_weight/deduct_detail 可先按规则预填，也可核价时手工定，称重完成时再最终确认。
+
+2. 1 已核价 → 2 称重完成
+
+前置：status=1 且 start_reading_id/end_reading_id 已确定，net_weight、settle_weight 已算出。
+
+校验：net_weight = start_weight - end_weight，settle_weight = net_weight - deduct_weight。
+
+此态才允许进入结算候选。
+
+3. 2 称重完成 → 3 已结算
+
+前置：进入某个 settle_detail，回写 settle_id，status=3。
+
+受 settle_detail.uk_weigh_item 唯一约束保护，一批次只能结算一次。
+
+4. 任意非终态 → 4 作废
+
+前置：未进入结算（settle_id IS NULL）。
+
+已结算的批次不能直接作废，需先作废结算单（业务层控制）。
+
+5. 状态不可逆
+
+1→0、2→1、3→2 均不允许（核价错误需作废重开新批次，或走"反核价"特批流程，建议后者不做，保持简单）。
+
+六 weigh_item 的weigh_mode说明
+1、应用层约束（校验规则）
+模式1（两次过磅）：
+
+end_reading_id 必填，且指向的读数 trip_id 与本 item 相同、seq > start_reading.seq。
+
+net_weight = start_weight - end_weight。
+
+模式2（单次过磅）：
+
+end_reading_id、end_weight 必须为空。
+
+net_weight = start_weight。
+
+通用：
+
+start_reading_id 两种模式都必填，且读数 tenant_id 与 item 一致。
+
+settle_weight = net_weight - deduct_weight（核价/称重完成后算）。
+
+状态机不变：0新建 → 1已核价 → 2称重完成 → 3已结算 / 4作废。单次模式在"已核价 + 有 start_weight"时即可进 2。
+
+2、weigh_reading 不用改
+单次过磅就是一条 weigh_reading（seq=1），weigh_item.start_reading_id 指向它。weigh_reading.trip_id NOT NULL、uk_trip_seq 都不受影响。模式2 下该 trip 只有 1 条读数，weigh_item 只有 1 行，item_count=1。
+
+五、weigh_trip 不用改
+行程表字段和状态汇总逻辑不变。单次过磅的 trip 就是"进厂称一次→出单"的简化行程。
+
+3、对结算的影响
+settle_detail 只拉 weigh_item.status=2 的批次，单次和两次模式一视同仁：
+
+重量取 settle_weight（= net_weight - deduct_weight）。
+
+单价取 weigh_item.unit_price（核价结果）。
+
+单次模式若 deduct_weight=0，则 settle_weight = start_weight，直接按读数结算。
+
+4、界面差异（给前端提示）
+过磅界面根据 weigh_mode 切换：
+
+模式1：显示"毛重 / 皮重 / 净重"三栏，需要两次读数。
+
+模式2：只显示"读数（即净重）"一栏，隐藏皮重栏，明确提示"本次读数直接作为净重"。
+
+这样操作员不会困惑"为什么没有皮重输入框"。

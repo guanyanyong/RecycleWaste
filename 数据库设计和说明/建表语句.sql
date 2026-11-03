@@ -1,0 +1,570 @@
+-- ============================================================
+-- 再生资源过磅系统 多租户建表 + 初始化脚本（自增ID版）
+-- 适配 MySQL 5.7+ / 8.0，字符集 utf8mb4
+-- 主键统一 BIGINT AUTO_INCREMENT，外键引用字段同步 BIGINT
+-- sys_permission.perm_id 为语义编码，保留 VARCHAR
+-- ============================================================
+
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- CREATE DATABASE IF NOT EXISTS `recycle_weigh` DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_general_ci;
+-- USE `recycle_weigh`;
+
+-- ============================================================
+-- 一、租户与组织
+-- ============================================================
+
+DROP TABLE IF EXISTS `sys_tenant`;
+CREATE TABLE `sys_tenant` (
+  `tenant_id`     BIGINT       NOT NULL AUTO_INCREMENT COMMENT '租户ID',
+  `tenant_name`   VARCHAR(100) NOT NULL COMMENT '租户名称(老板/公司名)',
+  `tenant_type`   TINYINT      NOT NULL DEFAULT 1 COMMENT '1=自营 2=外部SaaS客户',
+  `status`        TINYINT      NOT NULL DEFAULT 1 COMMENT '0=禁用 1=启用 2=试用 3=到期',
+  `expire_time`   DATETIME     DEFAULT NULL COMMENT 'SaaS到期时间,自用填9999-12-31',
+  `contact_name`  VARCHAR(50)  DEFAULT NULL COMMENT '联系人',
+  `contact_phone` VARCHAR(20)  DEFAULT NULL COMMENT '联系电话',
+  `remark`        VARCHAR(500) DEFAULT NULL COMMENT '备注',
+  `create_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`tenant_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='租户表';
+
+DROP TABLE IF EXISTS `sys_station`;
+CREATE TABLE `sys_station` (
+  `station_id`    BIGINT       NOT NULL AUTO_INCREMENT COMMENT '站点ID',
+  `tenant_id`     BIGINT       NOT NULL COMMENT '所属租户',
+  `station_name`  VARCHAR(100) NOT NULL COMMENT '站点名称',
+  `station_code`  VARCHAR(50)  NOT NULL COMMENT '站点编码,租户内唯一',
+  `address`       VARCHAR(200) DEFAULT NULL COMMENT '地址',
+  `contact_name`  VARCHAR(50)  DEFAULT NULL COMMENT '站点联系人',
+  `contact_phone` VARCHAR(20)  DEFAULT NULL COMMENT '站点电话',
+  `status`        TINYINT      NOT NULL DEFAULT 1 COMMENT '0=停用 1=启用',
+  `create_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`station_id`),
+  UNIQUE KEY `uk_tenant_code` (`tenant_id`,`station_code`),
+  KEY `idx_tenant` (`tenant_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='站点表';
+
+DROP TABLE IF EXISTS `sys_user`;
+CREATE TABLE `sys_user` (
+  `user_id`     BIGINT       NOT NULL AUTO_INCREMENT COMMENT '用户ID',
+  `username`    VARCHAR(50)  NOT NULL COMMENT '登录名,全局唯一',
+  `password`    VARCHAR(100) NOT NULL COMMENT '密码哈希',
+  `real_name`   VARCHAR(50)  DEFAULT NULL COMMENT '真实姓名',
+  `phone`       VARCHAR(20)  DEFAULT NULL COMMENT '手机号',
+  `status`      TINYINT      NOT NULL DEFAULT 1 COMMENT '0=禁用 1=启用',
+  `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`user_id`),
+  UNIQUE KEY `uk_username` (`username`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户表';
+
+DROP TABLE IF EXISTS `sys_user_tenant`;
+CREATE TABLE `sys_user_tenant` (
+  `user_id`       BIGINT       NOT NULL COMMENT '用户ID',
+  `tenant_id`     BIGINT       NOT NULL COMMENT '租户ID',
+  `station_scope` VARCHAR(500) DEFAULT NULL COMMENT '可见站点ID列表,逗号分隔,空=全部',
+  `status`        TINYINT      NOT NULL DEFAULT 1 COMMENT '0=禁用 1=启用',
+  `create_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`user_id`,`tenant_id`),
+  KEY `idx_tenant` (`tenant_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户-租户关系表';
+
+DROP TABLE IF EXISTS `sys_role`;
+CREATE TABLE `sys_role` (
+  `role_id`     BIGINT       NOT NULL AUTO_INCREMENT COMMENT '角色ID',
+  `tenant_id`   BIGINT       NOT NULL COMMENT '所属租户',
+  `role_code`   VARCHAR(50)  NOT NULL COMMENT '角色编码,租户内唯一',
+  `role_name`   VARCHAR(50)  NOT NULL COMMENT '角色名称',
+  `is_builtin`  TINYINT      NOT NULL DEFAULT 0 COMMENT '1=内置角色不可删 0=自定义',
+  `remark`      VARCHAR(200) DEFAULT NULL COMMENT '说明',
+  `status`      TINYINT      NOT NULL DEFAULT 1 COMMENT '0=停用 1=启用',
+  `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`role_id`),
+  UNIQUE KEY `uk_tenant_code` (`tenant_id`,`role_code`),
+  KEY `idx_tenant` (`tenant_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='角色定义表';
+
+DROP TABLE IF EXISTS `sys_user_tenant_role`;
+CREATE TABLE `sys_user_tenant_role` (
+  `user_id`     BIGINT      NOT NULL COMMENT '用户ID',
+  `tenant_id`   BIGINT      NOT NULL COMMENT '租户ID',
+  `role_code`   VARCHAR(50) NOT NULL COMMENT '角色编码,对应sys_role.role_code',
+  `create_time` DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '授权时间',
+  PRIMARY KEY (`user_id`,`tenant_id`,`role_code`),
+  KEY `idx_tenant_role` (`tenant_id`,`role_code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户-租户-角色表';
+
+DROP TABLE IF EXISTS `sys_permission`;
+CREATE TABLE `sys_permission` (
+  `perm_id`    VARCHAR(50)  NOT NULL COMMENT '权限点ID,如 weigh:create',
+  `perm_name`  VARCHAR(50)  NOT NULL COMMENT '权限名称',
+  `perm_group` VARCHAR(50)  NOT NULL COMMENT '权限分组,如 weigh/settle/system',
+  `sort_no`    INT          NOT NULL DEFAULT 0 COMMENT '排序号',
+  `remark`     VARCHAR(200) DEFAULT NULL COMMENT '说明',
+  PRIMARY KEY (`perm_id`),
+  KEY `idx_group` (`perm_group`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='权限点表';
+
+DROP TABLE IF EXISTS `sys_role_permission`;
+CREATE TABLE `sys_role_permission` (
+  `role_id` BIGINT      NOT NULL COMMENT '角色ID',
+  `perm_id` VARCHAR(50) NOT NULL COMMENT '权限点ID',
+  PRIMARY KEY (`role_id`,`perm_id`),
+  KEY `idx_perm` (`perm_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='角色-权限关联表';
+
+-- ============================================================
+-- 二、硬件设备
+-- ============================================================
+
+DROP TABLE IF EXISTS `sys_device`;
+CREATE TABLE `sys_device` (
+  `device_id`   BIGINT       NOT NULL AUTO_INCREMENT COMMENT '设备ID',
+  `tenant_id`   BIGINT       NOT NULL COMMENT '所属租户',
+  `station_id`  BIGINT       NOT NULL COMMENT '所属站点',
+  `device_type` TINYINT      NOT NULL COMMENT '1=地磅仪表 2=摄像头 3=LED屏 4=道闸',
+  `device_name` VARCHAR(50)  DEFAULT NULL COMMENT '设备名称',
+  `device_sn`   VARCHAR(64)  NOT NULL COMMENT '设备序列号,全局唯一',
+  `status`      TINYINT      NOT NULL DEFAULT 1 COMMENT '0=停用 1=启用',
+  `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`device_id`),
+  UNIQUE KEY `uk_sn` (`device_sn`),
+  KEY `idx_tenant_station` (`tenant_id`,`station_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='设备表';
+
+-- ============================================================
+-- 三、物料分类与物料
+-- ============================================================
+
+DROP TABLE IF EXISTS `material_category`;
+CREATE TABLE `material_category` (
+  `category_id`    BIGINT       NOT NULL AUTO_INCREMENT COMMENT '分类ID',
+  `tenant_id`      BIGINT       DEFAULT NULL COMMENT '所属租户,NULL=系统预置全局分类',
+  `parent_id`      BIGINT       DEFAULT NULL COMMENT '父分类ID,NULL=顶级分类',
+  `category_code`  VARCHAR(50)  NOT NULL COMMENT '分类编码,同一归属下唯一',
+  `category_name`  VARCHAR(100) NOT NULL COMMENT '分类名称,如金属/纸类/塑料',
+  `level`          TINYINT      NOT NULL DEFAULT 1 COMMENT '层级,1=一级 2=二级...',
+  `sort_no`        INT          NOT NULL DEFAULT 0 COMMENT '排序号',
+  `is_builtin`     TINYINT      NOT NULL DEFAULT 0 COMMENT '1=系统预置 0=租户自定义',
+  `status`         TINYINT      NOT NULL DEFAULT 1 COMMENT '0=停用 1=启用',
+  `remark`         VARCHAR(200) DEFAULT NULL COMMENT '备注',
+  `create_time`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`category_id`),
+  UNIQUE KEY `uk_tenant_code` (`tenant_id`,`category_code`),
+  KEY `idx_tenant_parent` (`tenant_id`,`parent_id`),
+  KEY `idx_builtin` (`is_builtin`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='物料分类表(系统预置+租户自定义)';
+
+DROP TABLE IF EXISTS `tenant_category`;
+CREATE TABLE `tenant_category` (
+  `tenant_id`   BIGINT   NOT NULL COMMENT '租户ID',
+  `category_id` BIGINT   NOT NULL COMMENT '分类ID(系统预置分类)',
+  `is_enabled`  TINYINT  NOT NULL DEFAULT 1 COMMENT '0=该租户禁用此预置分类 1=启用',
+  `sort_no`     INT      DEFAULT NULL COMMENT '租户自定义排序,空=用分类表默认排序',
+  `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`tenant_id`,`category_id`),
+  KEY `idx_category` (`category_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='租户-分类选用关系表';
+
+DROP TABLE IF EXISTS `material`;
+CREATE TABLE `material` (
+  `material_id`   BIGINT        NOT NULL AUTO_INCREMENT COMMENT '物料ID',
+  `tenant_id`     BIGINT        NOT NULL COMMENT '所属租户',
+  `category_id`   BIGINT        DEFAULT NULL COMMENT '所属分类ID',
+  `material_code` VARCHAR(50)   NOT NULL COMMENT '物料编码,租户内唯一',
+  `material_name` VARCHAR(100)  NOT NULL COMMENT '物料名称,如铁/塑料瓶/铜/花纸箱/黄纸箱/铝',
+  `unit`          VARCHAR(10)   NOT NULL DEFAULT '吨' COMMENT '计量单位,默认吨',
+  `default_price` DECIMAL(12,4) DEFAULT NULL COMMENT '默认单价(元/吨),结算时预填',
+  `price_type`    TINYINT       NOT NULL DEFAULT 1 COMMENT '1=固定单价 2=浮动价',
+  `status`        TINYINT       NOT NULL DEFAULT 1 COMMENT '0=停用 1=启用',
+  `sort_no`       INT           NOT NULL DEFAULT 0 COMMENT '排序号,界面下拉排序',
+  `remark`        VARCHAR(200)  DEFAULT NULL COMMENT '备注',
+  `create_time`   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time`   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`material_id`),
+  UNIQUE KEY `uk_tenant_code` (`tenant_id`,`material_code`),
+  KEY `idx_tenant_status` (`tenant_id`,`status`),
+  KEY `idx_tenant_category` (`tenant_id`,`category_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='物料表';
+
+-- ============================================================
+-- 四、业务核心（行程-读数-货物批次）
+-- ============================================================
+
+DROP TABLE IF EXISTS `weigh_trip`;
+CREATE TABLE `weigh_trip` (
+  `trip_id`     BIGINT       NOT NULL AUTO_INCREMENT COMMENT '行程ID',
+  `tenant_id`   BIGINT       NOT NULL COMMENT '所属租户',
+  `station_id`  BIGINT       NOT NULL COMMENT '所属站点',
+  `trip_no`     VARCHAR(50)  NOT NULL COMMENT '行程号,租户内唯一',
+  `vehicle_id`  BIGINT       DEFAULT NULL COMMENT '车辆ID',
+  `plate_no`    VARCHAR(20)  DEFAULT NULL COMMENT '车牌快照',
+  `driver_name` VARCHAR(50)  DEFAULT NULL COMMENT '司机姓名',
+  `customer_id` BIGINT       DEFAULT NULL COMMENT '客户/供应商ID',
+  `biz_type`    TINYINT      NOT NULL COMMENT '1=收货 2=发货',
+  `item_count`  INT          NOT NULL DEFAULT 0 COMMENT '本行程货物批次数',
+  `status`      TINYINT      NOT NULL DEFAULT 0 COMMENT '0=进行中 1=称重完成 2=已结算 3=作废',
+  `remark`      VARCHAR(500) DEFAULT NULL COMMENT '备注',
+  `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`trip_id`),
+  UNIQUE KEY `uk_trip_no` (`tenant_id`,`trip_no`),
+  KEY `idx_tenant_station_time` (`tenant_id`,`station_id`,`create_time`),
+  KEY `idx_tenant_vehicle` (`tenant_id`,`vehicle_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='运输行程表';
+
+DROP TABLE IF EXISTS `weigh_reading`;
+CREATE TABLE `weigh_reading` (
+  `reading_id`   BIGINT        NOT NULL AUTO_INCREMENT COMMENT '读数ID',
+  `tenant_id`    BIGINT        NOT NULL COMMENT '所属租户',
+  `trip_id`      BIGINT        NOT NULL COMMENT '所属行程',
+  `seq`          INT           NOT NULL COMMENT '本行程内读数序号,从1开始',
+  `weight`       DECIMAL(12,2) NOT NULL COMMENT '地磅读数(吨)',
+  `reading_time` DATETIME      NOT NULL COMMENT '读数时间',
+  `operator`     BIGINT        DEFAULT NULL COMMENT '操作员用户ID',
+  `device_id`    BIGINT        DEFAULT NULL COMMENT '地磅设备ID',
+  `create_time`  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`reading_id`),
+  UNIQUE KEY `uk_trip_seq` (`trip_id`,`seq`),
+  KEY `idx_trip` (`trip_id`,`seq`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='称重读数表';
+
+
+DROP TABLE IF EXISTS `weigh_item`;
+CREATE TABLE `weigh_item` (
+  `item_id`              BIGINT        NOT NULL AUTO_INCREMENT COMMENT '批次ID',
+  `tenant_id`            BIGINT        NOT NULL COMMENT '所属租户',
+  `trip_id`              BIGINT        NOT NULL COMMENT '所属行程',
+  `seq`                  INT           NOT NULL COMMENT '行程内货物顺序',
+  `ticket_no`            VARCHAR(50)   NOT NULL COMMENT '批次磅单号,租户内唯一',
+  `material_id`          BIGINT        NOT NULL COMMENT '物料ID',
+  `customer_id`          BIGINT        DEFAULT NULL COMMENT '客户/供应商ID',
+  `biz_type`             TINYINT       NOT NULL COMMENT '1=收货 2=发货',
+
+  -- 称重方式
+  `weigh_mode`           TINYINT       NOT NULL DEFAULT 1 COMMENT '1=两次过磅(毛-皮) 2=单次过磅(读数即净重)',
+
+  -- 称重读数引用与快照
+  `start_reading_id`     BIGINT        NOT NULL COMMENT '起始读数(两种模式都必填)',
+  `end_reading_id`       BIGINT        DEFAULT NULL COMMENT '结束读数(仅模式1必填)',
+  `start_weight`         DECIMAL(12,2) NOT NULL COMMENT '起始读数快照(模式2即净重)',
+  `end_weight`           DECIMAL(12,2) DEFAULT NULL COMMENT '结束读数快照(仅模式1)',
+  `net_weight`           DECIMAL(12,2) DEFAULT NULL COMMENT '净重:模式1=start-end,模式2=start',
+
+  -- 扣杂(实际结果)
+  `deduct_weight`        DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '扣杂重量合计',
+  `deduct_detail`        JSON          DEFAULT NULL COMMENT '扣杂明细快照',
+  `settle_weight`        DECIMAL(12,2) DEFAULT NULL COMMENT '结算净重=net_weight-deduct_weight',
+
+  -- 核价(价格与扣点设置)
+  `unit_price`           DECIMAL(12,4) DEFAULT NULL COMMENT '核价单价(元/吨)',
+  `price_type`           TINYINT       DEFAULT NULL COMMENT '1=固定单价 2=浮动价',
+  `price_source`         VARCHAR(50)   DEFAULT NULL COMMENT '浮动价来源/批次',
+  `deduct_rule_snapshot` JSON          DEFAULT NULL COMMENT '核价时扣点规则快照',
+  `pricing_user_id`      BIGINT        DEFAULT NULL COMMENT '核价人用户ID',
+  `pricing_time`         DATETIME      DEFAULT NULL COMMENT '核价时间',
+
+  -- 状态与结算
+  `settle_id`            BIGINT        DEFAULT NULL COMMENT '关联结算单ID(冗余)',
+  `status`               TINYINT       NOT NULL DEFAULT 0 COMMENT '0=新建 1=已核价 2=称重完成 3=已结算 4=作废',
+  `remark`               VARCHAR(500)  DEFAULT NULL COMMENT '备注',
+  `create_time`          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time`          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+  PRIMARY KEY (`item_id`),
+  UNIQUE KEY `uk_ticket_no` (`tenant_id`,`ticket_no`),
+  UNIQUE KEY `uk_trip_seq` (`trip_id`,`seq`),
+  KEY `idx_trip` (`trip_id`,`seq`),
+  KEY `idx_tenant_material_time` (`tenant_id`,`material_id`,`create_time`),
+  KEY `idx_tenant_customer` (`tenant_id`,`customer_id`,`create_time`),
+  KEY `idx_settle` (`settle_id`),
+  KEY `idx_tenant_status` (`tenant_id`,`status`),
+  KEY `idx_pricing_user` (`pricing_user_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='货物批次表';
+-- ============================================================
+-- 五、扣杂配置
+-- ============================================================
+
+DROP TABLE IF EXISTS `tenant_deduct_rule`;
+CREATE TABLE `tenant_deduct_rule` (
+  `rule_id`     BIGINT        NOT NULL AUTO_INCREMENT COMMENT '规则ID',
+  `tenant_id`   BIGINT        NOT NULL COMMENT '所属租户',
+  `material_id` BIGINT        DEFAULT NULL COMMENT '适用物料,空=租户通用',
+  `rule_name`   VARCHAR(50)   NOT NULL COMMENT '规则名称',
+  `deduct_type` TINYINT       NOT NULL COMMENT '1=按比例扣重 2=按固定重量扣 3=按比例扣款',
+  `ratio`       DECIMAL(6,4)  DEFAULT NULL COMMENT '比例值,如0.0200扣2%',
+  `fixed_value` DECIMAL(12,2) DEFAULT NULL COMMENT '固定扣重/扣款值',
+  `calc_base`   TINYINT       DEFAULT NULL COMMENT '计算基数:1=毛重 2=净重',
+  `priority`    INT           NOT NULL DEFAULT 0 COMMENT '多规则叠加优先级',
+  `status`      TINYINT       NOT NULL DEFAULT 1 COMMENT '0=停用 1=启用',
+  `create_time` DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`rule_id`),
+  KEY `idx_tenant_material` (`tenant_id`,`material_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='扣杂规则表';
+
+DROP TABLE IF EXISTS `tenant_config`;
+CREATE TABLE `tenant_config` (
+  `tenant_id`    BIGINT       NOT NULL COMMENT '租户ID',
+  `config_key`   VARCHAR(50)  NOT NULL COMMENT '配置键',
+  `config_value` VARCHAR(500) DEFAULT NULL COMMENT '配置值',
+  `remark`       VARCHAR(200) DEFAULT NULL COMMENT '说明',
+  `update_time`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`tenant_id`,`config_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='租户配置表';
+
+-- ============================================================
+-- 六、结算
+-- ============================================================
+
+DROP TABLE IF EXISTS `settle_record`;
+CREATE TABLE `settle_record` (
+  `settle_id`           BIGINT        NOT NULL AUTO_INCREMENT COMMENT '结算单ID',
+  `tenant_id`           BIGINT        NOT NULL COMMENT '所属租户',
+  `station_id`          BIGINT        DEFAULT NULL COMMENT '所属站点',
+  `settle_no`           VARCHAR(50)   NOT NULL COMMENT '结算单号,租户内唯一',
+  `settle_mode`         TINYINT       NOT NULL DEFAULT 3 COMMENT '1=按客户时段 2=按行程 3=手工勾选',
+  `trip_id`             BIGINT        DEFAULT NULL COMMENT '按行程结算时填',
+  `period_start`        DATETIME      DEFAULT NULL COMMENT '按客户时段结算时起',
+  `period_end`          DATETIME      DEFAULT NULL COMMENT '按客户时段结算时止',
+  `customer_id`         BIGINT        NOT NULL COMMENT '客户/供应商ID',
+  `biz_type`            TINYINT       NOT NULL COMMENT '1=收货付款 2=发货收款',
+  `settle_date`         DATE          NOT NULL COMMENT '结算日期',
+  `total_settle_weight` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '结算净重合计',
+  `total_amount`        DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '结算金额合计',
+  `paid_amount`         DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '已付/已收金额',
+  `pay_status`          TINYINT       NOT NULL DEFAULT 0 COMMENT '0=未结 1=部分 2=已结清',
+  `material_summary`    JSON          DEFAULT NULL COMMENT '按物料汇总快照',
+  `remark`              VARCHAR(500)  DEFAULT NULL COMMENT '备注',
+  `create_time`         DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time`         DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`settle_id`),
+  UNIQUE KEY `uk_settle_no` (`tenant_id`,`settle_no`),
+  KEY `idx_tenant_customer` (`tenant_id`,`customer_id`,`settle_date`),
+  KEY `idx_tenant_trip` (`tenant_id`,`trip_id`),
+  KEY `idx_tenant_status` (`tenant_id`,`pay_status`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='结算单头表';
+
+DROP TABLE IF EXISTS `settle_detail`;
+CREATE TABLE `settle_detail` (
+  `detail_id`     BIGINT        NOT NULL AUTO_INCREMENT COMMENT '明细ID',
+  `tenant_id`     BIGINT        NOT NULL COMMENT '所属租户',
+  `settle_id`     BIGINT        NOT NULL COMMENT '所属结算单',
+  `weigh_item_id` BIGINT        NOT NULL COMMENT '关联货物批次',
+  `trip_id`       BIGINT        DEFAULT NULL COMMENT '冗余,快查',
+  `ticket_no`     VARCHAR(50)   DEFAULT NULL COMMENT '批次磅单号快照',
+  `material_id`   BIGINT        NOT NULL COMMENT '物料快照',
+  `net_weight`    DECIMAL(12,2) NOT NULL COMMENT '净重快照',
+  `deduct_weight` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '扣杂重量快照',
+  `settle_weight` DECIMAL(12,2) NOT NULL COMMENT '结算净重快照',
+  `unit_price`    DECIMAL(12,4) NOT NULL COMMENT '单价(元/吨)',
+  `price_type`    TINYINT       NOT NULL DEFAULT 1 COMMENT '1=固定单价 2=浮动价',
+  `price_source`  VARCHAR(50)   DEFAULT NULL COMMENT '浮动价来源/批次',
+  `amount`        DECIMAL(14,2) NOT NULL COMMENT '金额=settle_weight*unit_price',
+  `deduct_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '计价扣款',
+  `deduct_reason` VARCHAR(200)  DEFAULT NULL COMMENT '计价扣款原因',
+  `final_amount`  DECIMAL(14,2) NOT NULL COMMENT '最终金额=amount-deduct_amount',
+  `create_time`   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`detail_id`),
+  UNIQUE KEY `uk_weigh_item` (`weigh_item_id`),
+  KEY `idx_settle` (`settle_id`),
+  KEY `idx_tenant_material` (`tenant_id`,`material_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='结算明细表';
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- ============================================================
+-- 七、初始化数据（自增ID，无需手写ID）
+-- ============================================================
+
+-- 1. 自营租户（tenant_id 自增=1）
+INSERT INTO `sys_tenant`
+(`tenant_name`,`tenant_type`,`status`,`expire_time`,`contact_name`,`contact_phone`,`remark`)
+VALUES
+('自营公司',1,1,'9999-12-31 23:59:59','管理员',NULL,'系统自营租户');
+
+-- 2. 默认站点（station_id 自增=1，tenant_id=1）
+INSERT INTO `sys_station`
+(`tenant_id`,`station_name`,`station_code`,`status`)
+VALUES
+(1,'总站','HQ',1);
+
+-- 3. admin 用户（user_id 自增=1）
+INSERT INTO `sys_user`
+(`username`,`password`,`real_name`,`status`)
+VALUES
+('admin','$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy','超级管理员',1);
+
+-- 4. admin 与自营租户关系（user_id=1, tenant_id=1）
+INSERT INTO `sys_user_tenant`
+(`user_id`,`tenant_id`,`station_scope`,`status`)
+VALUES
+(1,1,NULL,1);
+
+-- 5. 权限点字典（perm_id 为语义编码，保留 VARCHAR）
+INSERT INTO `sys_permission` (`perm_id`,`perm_name`,`perm_group`,`sort_no`) VALUES
+('weigh:create','创建行程/过磅','weigh',1),
+('weigh:reading','录入称重读数','weigh',2),
+('weigh:item','生成/编辑货物批次','weigh',3),
+('weigh:cancel','作废磅单','weigh',4),
+('weigh:view','查看磅单','weigh',5),
+('weigh:print','打印磅单','weigh',6),
+('deduct:config','配置扣杂规则','deduct',10),
+('settle:create','创建结算单','settle',20),
+('settle:audit','审核结算单','settle',21),
+('settle:pay','登记付款/收款','settle',22),
+('settle:view','查看结算单','settle',23),
+('settle:cancel','作废结算单','settle',24),
+('station:manage','站点增删改','system',30),
+('user:manage','用户与角色管理','system',31),
+('device:manage','设备管理','system',32),
+('config:manage','租户配置管理','system',33),
+('material:manage','物料与分类管理','system',34),
+('report:view','查看报表','report',40),
+('report:export','导出报表/数据','report',41);
+
+-- 6. 自营租户的 5 个内置角色（role_id 自增 1~5，tenant_id=1）
+INSERT INTO `sys_role`
+(`tenant_id`,`role_code`,`role_name`,`is_builtin`,`status`)
+VALUES
+(1,'tenant_admin','租户管理员',1,1),   -- role_id=1
+(1,'station_manager','站点主管',1,1),  -- role_id=2
+(1,'weigh_operator','过磅员',1,1),     -- role_id=3
+(1,'settle_clerk','结算员',1,1),       -- role_id=4
+(1,'viewer','只读观察员',1,1);         -- role_id=5
+
+-- 7. 角色-权限映射（用 role_code 子查询取 role_id，避免硬编码假设）
+-- 7.1 tenant_admin：全部权限点
+INSERT INTO `sys_role_permission` (`role_id`,`perm_id`)
+SELECT r.`role_id`, p.`perm_id`
+FROM `sys_role` r, `sys_permission` p
+WHERE r.`tenant_id`=1 AND r.`role_code`='tenant_admin';
+
+-- 7.2 station_manager
+INSERT INTO `sys_role_permission` (`role_id`,`perm_id`)
+SELECT r.`role_id`, p.`perm_id`
+FROM `sys_role` r, `sys_permission` p
+WHERE r.`tenant_id`=1 AND r.`role_code`='station_manager'
+  AND p.`perm_id` IN (
+    'weigh:create','weigh:reading','weigh:item','weigh:cancel','weigh:view','weigh:print',
+    'deduct:config','settle:view','material:manage','report:view','report:export');
+
+-- 7.3 weigh_operator
+INSERT INTO `sys_role_permission` (`role_id`,`perm_id`)
+SELECT r.`role_id`, p.`perm_id`
+FROM `sys_role` r, `sys_permission` p
+WHERE r.`tenant_id`=1 AND r.`role_code`='weigh_operator'
+  AND p.`perm_id` IN (
+    'weigh:create','weigh:reading','weigh:item','weigh:view','weigh:print');
+
+-- 7.4 settle_clerk
+INSERT INTO `sys_role_permission` (`role_id`,`perm_id`)
+SELECT r.`role_id`, p.`perm_id`
+FROM `sys_role` r, `sys_permission` p
+WHERE r.`tenant_id`=1 AND r.`role_code`='settle_clerk'
+  AND p.`perm_id` IN (
+    'settle:create','settle:audit','settle:pay','settle:view','weigh:view','report:view');
+
+-- 7.5 viewer
+INSERT INTO `sys_role_permission` (`role_id`,`perm_id`)
+SELECT r.`role_id`, p.`perm_id`
+FROM `sys_role` r, `sys_permission` p
+WHERE r.`tenant_id`=1 AND r.`role_code`='viewer'
+  AND p.`perm_id` IN ('weigh:view','settle:view','report:view');
+
+-- 8. admin 授权 tenant_admin 角色
+INSERT INTO `sys_user_tenant_role` (`user_id`,`tenant_id`,`role_code`)
+VALUES (1,1,'tenant_admin');
+
+-- 9. 系统预置物料分类（tenant_id=NULL，自增ID）
+-- 一级分类
+INSERT INTO `material_category`
+(`tenant_id`,`parent_id`,`category_code`,`category_name`,`level`,`sort_no`,`is_builtin`,`status`)
+VALUES
+(NULL,NULL,'METAL',  '金属',1,10,1,1),   -- category_id=1
+(NULL,NULL,'PAPER',  '纸类',1,20,1,1),   -- category_id=2
+(NULL,NULL,'PLASTIC','塑料',1,30,1,1),   -- category_id=3
+(NULL,NULL,'FOAM',   '泡沫',1,40,1,1);   -- category_id=4
+
+-- 金属下二级（parent_id=1）
+INSERT INTO `material_category`
+(`tenant_id`,`parent_id`,`category_code`,`category_name`,`level`,`sort_no`,`is_builtin`,`status`)
+VALUES
+(NULL,1,'FE',      '铁',    2,11,1,1),   -- category_id=5
+(NULL,1,'CU',      '铜',    2,12,1,1),   -- category_id=6
+(NULL,1,'AL',      '铝',    2,13,1,1),   -- category_id=7
+(NULL,1,'AL_ALLOY','铝合金',2,14,1,1),   -- category_id=8
+(NULL,1,'ZN_ALLOY','锌合金',2,15,1,1),   -- category_id=9
+(NULL,1,'STEEL',   '不锈钢',2,16,1,1);   -- category_id=10
+
+-- 纸类下二级（parent_id=2）
+INSERT INTO `material_category`
+(`tenant_id`,`parent_id`,`category_code`,`category_name`,`level`,`sort_no`,`is_builtin`,`status`)
+VALUES
+(NULL,2,'PAPER_H','花纸箱',2,21,1,1),   -- category_id=11
+(NULL,2,'PAPER_Y','黄纸箱',2,22,1,1);   -- category_id=12
+
+-- 塑料下二级（parent_id=3）
+INSERT INTO `material_category`
+(`tenant_id`,`parent_id`,`category_code`,`category_name`,`level`,`sort_no`,`is_builtin`,`status`)
+VALUES
+(NULL,3,'BOTTLE',   '塑料瓶',  2,31,1,1), -- category_id=13
+(NULL,3,'PLASTIC_N','普通塑料',2,32,1,1), -- category_id=14
+(NULL,3,'PPR_W',    'ppr白色', 2,33,1,1), -- category_id=15
+(NULL,3,'PPR_B',    'ppr黑',   2,34,1,1); -- category_id=16
+
+-- 泡沫下二级（parent_id=4）
+INSERT INTO `material_category`
+(`tenant_id`,`parent_id`,`category_code`,`category_name`,`level`,`sort_no`,`is_builtin`,`status`)
+VALUES
+(NULL,4,'FOAM_BOX','泡沫箱',2,41,1,1);   -- category_id=17
+
+-- 10. 自营租户常用物料（tenant_id=1，category_id 引用上面预置分类）
+-- 为不依赖硬编码 category_id，用 category_code 子查询取 ID
+INSERT INTO `material`
+(`tenant_id`,`category_id`,`material_code`,`material_name`,`unit`,`default_price`,`price_type`,`status`,`sort_no`,`remark`)
+SELECT 1, c.`category_id`, t.`material_code`, t.`material_name`, '吨', t.`default_price`, 1, 1, t.`sort_no`, t.`remark`
+FROM (
+  SELECT 'FE_SCRAP' AS material_code,'废铁' AS material_name,2200.0000 AS default_price,10 AS sort_no,'统废/边角料' AS remark, 'FE' AS cat_code UNION ALL
+  SELECT 'FE_HEAVY','重废',2500.0000,11,'重型废钢','FE' UNION ALL
+  SELECT 'FE_LIGHT','轻薄料',1800.0000,12,'薄铁皮/轻废','FE' UNION ALL
+  SELECT 'CU_BRIGHT','光亮铜',68000.0000,20,'高纯铜线','CU' UNION ALL
+  SELECT 'CU_MIXED','混合铜',55000.0000,21,'杂铜','CU' UNION ALL
+  SELECT 'CU_CABLE','废电缆铜',52000.0000,22,'带皮电缆','CU' UNION ALL
+  SELECT 'AL_SCRAP','废铝',14000.0000,30,'统铝','AL' UNION ALL
+  SELECT 'AL_PROFILE','铝型材',16000.0000,31,'门窗铝型材','AL' UNION ALL
+  SELECT 'ALLOY_AL','铝合金废料',13500.0000,35,'铝合金边角料','AL_ALLOY' UNION ALL
+  SELECT 'ALLOY_ZN','锌合金废料',12000.0000,40,'锌合金压铸件','ZN_ALLOY' UNION ALL
+  SELECT 'STEEL_304','304不锈钢',9000.0000,45,'304系','STEEL' UNION ALL
+  SELECT 'STEEL_201','201不锈钢',6500.0000,46,'201系','STEEL' UNION ALL
+  SELECT 'PAPER_FLOWER','花纸箱',1300.0000,50,'彩印纸箱','PAPER_H' UNION ALL
+  SELECT 'PAPER_BOOK','废书本',1500.0000,51,'书本纸','PAPER_H' UNION ALL
+  SELECT 'PAPER_KRAFT','黄纸箱',1200.0000,55,'黄板纸/瓦楞箱','PAPER_Y' UNION ALL
+  SELECT 'PAPER_NEWS','废报纸',1400.0000,56,'新闻纸','PAPER_Y' UNION ALL
+  SELECT 'BOTTLE_PET','PET塑料瓶',4500.0000,60,'矿泉水瓶','BOTTLE' UNION ALL
+  SELECT 'BOTTLE_HDPE','HDPE瓶',5000.0000,61,'洗发水瓶等','BOTTLE' UNION ALL
+  SELECT 'PLASTIC_MIX','混合塑料',2000.0000,65,'杂塑料','PLASTIC_N' UNION ALL
+  SELECT 'PLASTIC_PE','PE塑料',3500.0000,66,'聚乙烯','PLASTIC_N' UNION ALL
+  SELECT 'PPR_WHITE','ppr白色',3000.0000,70,'白色PPR管材','PPR_W' UNION ALL
+  SELECT 'PPR_BLACK','ppr黑',2800.0000,75,'黑色PPR管材','PPR_B' UNION ALL
+  SELECT 'FOAM_BOX_EPS','泡沫箱',1500.0000,80,'EPS泡沫箱','FOAM_BOX'
+) t
+JOIN `material_category` c
+  ON c.`tenant_id` IS NULL AND c.`category_code` = t.`cat_code`;
+
+-- ============================================================
+-- 完成
+-- 登录账号: admin / admin123
+-- admin user_id=1, tenant_id=1, 拥有 tenant_admin 角色 = 全部权限
+-- 自营租户 tenant_id=1，默认站点 station_id=1(HQ)
+-- 系统预置分类 17 条（4 一级 + 13 二级），category_id 1~17
+-- 自营租户物料 23 条
+-- ============================================================
